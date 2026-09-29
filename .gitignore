@@ -1,0 +1,7 @@
+cmake-build-*/
+.idea/
+.vscode/
+*.o
+*.exe
+emulator
+test_bin

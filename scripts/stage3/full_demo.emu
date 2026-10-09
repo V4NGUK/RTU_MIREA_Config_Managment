@@ -1,0 +1,10 @@
+// Exercise commands from the earlier stages, VFS saving, and error handling.
+echo "Stage 3: full command and VFS example"
+regvar STAGE3_MESSAGE "environment variables work"
+echo "$STAGE3_MESSAGE"
+ls /
+cd /home/alex
+vfs-save "$SHELL_EMULATOR_OUTPUT/full-demo-copy.zip"
+vfs-save
+unknown-command
+exit

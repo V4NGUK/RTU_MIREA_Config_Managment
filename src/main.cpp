@@ -1,3 +1,4 @@
+#include "vfs.hpp"
 
 #include <cctype>
 #include <cstdlib>
@@ -253,7 +254,8 @@ bool parse_configuration(int argc,
     return true;
 }
 
-bool execute_command(const std::vector<std::string>& arguments) {
+bool execute_command(const std::vector<std::string>& arguments,
+                     VirtualFileSystem& vfs) {
     if (arguments.empty()) return true;
     const std::string& command = arguments.front();
 
@@ -301,11 +303,26 @@ bool execute_command(const std::vector<std::string>& arguments) {
         return true;
     }
 
+    if (command == "vfs-save") {
+        if (arguments.size() != 2) {
+            std::cerr << "Error: usage: vfs-save <destination.zip>\n";
+            return true;
+        }
+        std::string error;
+        if (!vfs.save_zip(arguments[1], error)) {
+            std::cerr << "Error: " << error << '\n';
+        } else {
+            std::cout << "VFS saved to " << arguments[1] << '\n';
+        }
+        return true;
+    }
+
     std::cerr << "Error: Unknown command '" << command << "'\n";
     return true;
 }
 
 bool execute_line(const std::string& original_line,
+                  VirtualFileSystem& vfs,
                   bool echo_input) {
     std::string line = strip_comment(original_line);
     while (!line.empty() && std::isspace(static_cast<unsigned char>(line.back()))) {
@@ -326,10 +343,11 @@ bool execute_line(const std::string& original_line,
         std::cerr << "Error: " << error << '\n';
         return true;
     }
-    return execute_command(arguments);
+    return execute_command(arguments, vfs);
 }
 
 bool run_stream(std::istream& input,
+                VirtualFileSystem& vfs,
                 bool echo_input,
                 bool show_prompt) {
     std::string line;
@@ -340,7 +358,7 @@ bool run_stream(std::istream& input,
         }
         if (!std::getline(input, line)) return true;
         if (!line.empty() && line.back() == '\r') line.pop_back();
-        if (!execute_line(line, echo_input)) return false;
+        if (!execute_line(line, vfs, echo_input)) return false;
     }
 }
 
@@ -374,6 +392,13 @@ int main(int argc, char** argv) {
         std::cout << "(not specified)\n";
     }
 
+    VirtualFileSystem vfs;
+    std::string error;
+    if (!vfs.load_zip(configuration.vfs_path, error)) {
+        std::cerr << "Error: " << error << '\n';
+        return 1;
+    }
+
     if (configuration.startup_script) {
         std::ifstream script(*configuration.startup_script);
         if (!script) {
@@ -381,10 +406,10 @@ int main(int argc, char** argv) {
                       << configuration.startup_script->string() << '\n';
             return 1;
         }
-        if (!run_stream(script, true, false)) return 0;
+        if (!run_stream(script, vfs, true, false)) return 0;
         if (!standard_input_is_terminal()) return 0;
     }
 
-    run_stream(std::cin, false, true);
+    run_stream(std::cin, vfs, false, true);
     return 0;
 }

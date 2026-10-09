@@ -2,4 +2,4 @@
 set -euo pipefail
 source "$(dirname "$0")/../common.sh"
 "$EMULATOR_BIN" --vfs "$VFS_EXAMPLES/nested.zip" \
-    --startup-script "$PROJECT_ROOT/scripts/stage2/nested.emu"
+    --script "$PROJECT_ROOT/scripts/stage3/full_demo.emu"

@@ -1,4 +1,5 @@
 // Startup script for the minimal ZIP VFS.
 echo "Stage 2: minimal VFS and startup script"
 ls /
+vfs-save "$SHELL_EMULATOR_OUTPUT/minimal-copy.zip"
 exit

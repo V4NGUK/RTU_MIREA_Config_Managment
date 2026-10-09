@@ -24,4 +24,11 @@ if [[ -z "$EMULATOR_BIN" || ! -x "$EMULATOR_BIN" ]]; then
     exit 2
 fi
 
+VFS_EXAMPLES="$(dirname "$EMULATOR_BIN")/vfs"
+if [[ ! -d "$VFS_EXAMPLES" ]]; then
+    VFS_EXAMPLES="$(dirname "$EMULATOR_BIN")/../vfs"
+fi
+export SHELL_EMULATOR_FIXTURES="$VFS_EXAMPLES"
+mkdir -p "$PROJECT_ROOT/build/stage-output"
+export SHELL_EMULATOR_OUTPUT="$PROJECT_ROOT/build/stage-output"
 cd "$PROJECT_ROOT"

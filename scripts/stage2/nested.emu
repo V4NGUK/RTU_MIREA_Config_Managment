@@ -1,4 +1,5 @@
 // Startup script for a VFS with more than three directory levels.
 echo "Stage 2: deeply nested VFS"
 ls /home/alex/documents/semester/configuration
+vfs-save "$SHELL_EMULATOR_OUTPUT/nested-copy.zip"
 exit

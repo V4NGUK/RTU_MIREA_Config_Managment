@@ -2,4 +2,5 @@
 echo "Stage 2: VFS with several files"
 cd /home/alex
 ls /bin
+vfs-save "$SHELL_EMULATOR_OUTPUT/multiple-files-copy.zip"
 exit

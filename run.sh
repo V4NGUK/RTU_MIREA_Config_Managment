@@ -1,10 +1,8 @@
 #!/usr/bin/env bash
-set -e
-mkdir -p build
-cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make
-echo "=== Running Tests ==="
-./test_bin
-echo "=== Running Emulator ==="
-./emulator
+set -euo pipefail
+
+project_root="$(cd "$(dirname "$0")" && pwd)"
+cmake -S "$project_root" -B "$project_root/build" -DCMAKE_BUILD_TYPE=Release
+cmake --build "$project_root/build" --config Release
+cmake -E chdir "$project_root/build" ctest --output-on-failure -C Release
+exec "$project_root/build/emulator" --vfs "$project_root/vfs/minimal.zip"

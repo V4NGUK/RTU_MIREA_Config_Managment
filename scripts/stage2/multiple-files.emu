@@ -1,0 +1,5 @@
+// Startup script for the archive with files, folders, and binary content.
+echo "Stage 2: VFS with several files"
+cd /home/alex
+ls /bin
+exit

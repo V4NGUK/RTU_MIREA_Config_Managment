@@ -23,6 +23,7 @@ add_library(shell_core
     src/vfs.cpp
     src/vfs_ops.cpp
     src/parser.cpp
+    src/permissions.cpp
     src/shell.cpp
     src/text_commands.cpp
 )
@@ -54,3 +55,16 @@ add_test(NAME CliChecks COMMAND ${CMAKE_COMMAND}
     "-DEMULATOR=$<TARGET_FILE:emulator>" "-DFIXTURE_DIR=${VFS_EXAMPLE_DIR}"
     "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli-output" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_checks.cmake")
 
+add_executable(mutation_tests tests/test_mutations.cpp)
+target_link_libraries(mutation_tests PRIVATE shell_core)
+add_dependencies(mutation_tests example_archives)
+add_test(NAME MutationTests COMMAND mutation_tests
+    "${VFS_EXAMPLE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/mutation-output")
+if(WIN32)
+    find_program(POWERSHELL_EXECUTABLE NAMES pwsh powershell)
+    if(POWERSHELL_EXECUTABLE)
+        add_test(NAME ZipInterop COMMAND ${POWERSHELL_EXECUTABLE} -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/zip_interop.ps1" -Emulator $<TARGET_FILE:emulator>
+            -Fixtures "${VFS_EXAMPLE_DIR}" -Work "${CMAKE_CURRENT_BINARY_DIR}/interop-output")
+    endif()
+endif()

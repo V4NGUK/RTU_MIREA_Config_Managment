@@ -1,5 +1,5 @@
 param(
-    [ValidateSet(2, 3, 4)][int]$Stage = 4,
+    [ValidateSet(2, 3, 4, 5)][int]$Stage = 5,
     [string]$Emulator = ''
 )
 $ErrorActionPreference = 'Stop'

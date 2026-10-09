@@ -21,6 +21,8 @@ private:
     void list(const std::vector<std::string>& arguments);
     void change_directory(const std::vector<std::string>& arguments);
     void text_command(const std::vector<std::string>& arguments);
+    void change_mode(const std::vector<std::string>& arguments);
+    void touch(const std::vector<std::string>& arguments);
     void error(const std::string& command, const std::string& message);
     std::string prompt() const;
 

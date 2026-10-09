@@ -1,0 +1,53 @@
+/* Этап 5: изменения только в памяти и явное сохранение ZIP. */
+cd /home/alex
+touch new.txt "space file.txt"
+touch notes.txt
+touch -a notes.txt
+touch -m notes.txt
+touch -am notes.txt
+touch -c absent.txt
+touch -c notes.txt
+touch -- -leading.txt
+chmod 640 new.txt "space file.txt"
+chmod u+x,g+r,o= new.txt
+chmod g=u new.txt
+chmod u+s,g+s,o+t new.txt
+ls -l new.txt
+chmod 0644 new.txt
+chmod -R a+rX /home
+chmod -- 600 -leading.txt
+ls -al
+// Ошибки доступа не изменяют файлы реальной ОС.
+chmod u-r notes.txt
+tac notes.txt
+chmod u+r notes.txt
+chmod u-w /home/alex
+touch blocked.txt
+chmod u+w /home/alex
+chmod u-x /home/alex
+cd /home/alex
+ls .
+chmod u+x /home/alex
+// Ошибки аргументов и путей.
+chmod
+chmod 888 new.txt
+chmod u?x new.txt
+chmod 600 /missing
+touch
+touch -z new.txt
+touch /missing/file.txt
+touch /lines.txt/child
+vfs-load
+vfs-load "$SHELL_EMULATOR_FIXTURES/missing.zip"
+ls
+// Сохранение и последующая загрузка восстанавливают данные и права.
+vfs-save "$SHELL_EMULATOR_OUTPUT/stage5.zip"
+touch /after-save.txt
+vfs-load "$SHELL_EMULATOR_OUTPUT/stage5.zip"
+ls /after-save.txt
+ls -al /home/alex
+// Загрузка другого образа сбрасывает текущий каталог в корень VFS.
+vfs-load "$SHELL_EMULATOR_FIXTURES/minimal.zip"
+ls
+tac /README.txt
+exit

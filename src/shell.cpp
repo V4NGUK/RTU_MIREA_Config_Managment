@@ -1,8 +1,11 @@
 #include "shell.hpp"
 #include "text_commands.hpp"
+#include "permissions.hpp"
 
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
+#include <iomanip>
 #include <iterator>
 #include <utility>
 
@@ -39,6 +42,7 @@ bool Shell::run(std::istream& commands, bool echo_input) {
 
 void Shell::list(const std::vector<std::string>& arguments) {
     bool all = false;
+    bool detailed = false;
     bool options = true;
     std::vector<std::string> paths;
     for (std::size_t i = 1; i < arguments.size(); ++i) {
@@ -46,21 +50,37 @@ void Shell::list(const std::vector<std::string>& arguments) {
         if (options && arguments[i].size() > 1 && arguments[i][0] == '-') {
             for (std::size_t j = 1; j < arguments[i].size(); ++j) {
                 if (arguments[i][j] == 'a') all = true;
+                else if (arguments[i][j] == 'l') detailed = true;
                 else { error("ls", "unsupported option: " + arguments[i]); return; }
             }
         } else paths.push_back(arguments[i]);
     }
     if (paths.empty()) paths.push_back(".");
+    const auto print_entry = [&](const std::string& name, const VirtualFileSystem::Entry& item) {
+        if (detailed) {
+            output_ << format_mode(item.mode, item.is_directory) << " 1 user user " << item.data.size() << ' ';
+            const auto stamp = static_cast<std::time_t>(item.modified);
+            if (const auto* utc = std::gmtime(&stamp)) output_ << std::put_time(utc, "%Y-%m-%d %H:%M:%S");
+            else output_ << item.modified;
+            output_ << ' ';
+        }
+        output_ << name << '\n';
+    };
     for (const auto& path : paths) {
         std::string absolute, message;
         if (!vfs_.resolve(path, cwd_, absolute, message)) { error("ls", message); continue; }
         const auto* item = vfs_.entry(absolute);
-        if (!item->is_directory) { output_ << path << '\n'; continue; }
+        if (!item->is_directory) { print_entry(path, *item); continue; }
+        if (!vfs_.can_access(absolute, 5, message)) { error("ls", message); continue; }
         if (paths.size() > 1) output_ << path << ":\n";
-        if (all) output_ << ".\n..\n";
+        if (all) {
+            print_entry(".", *item);
+            const auto slash = absolute.rfind('/');
+            print_entry("..", *vfs_.entry(slash == 0 ? "/" : absolute.substr(0, slash)));
+        }
         for (const auto& child : vfs_.list_directory(absolute)) {
             if (!all && child.first.front() == '.') continue;
-            output_ << child.first << '\n';
+            print_entry(child.first, *vfs_.entry((absolute == "/" ? "" : absolute) + "/" + child.first));
         }
     }
 }
@@ -76,9 +96,45 @@ void Shell::change_directory(const std::vector<std::string>& arguments) {
     std::string absolute, message;
     if (!vfs_.resolve(target, cwd_, absolute, message)) { error("cd", message); return; }
     if (!vfs_.is_directory(absolute)) { error("cd", "not a directory: " + target); return; }
+    if (!vfs_.can_access(absolute, 1, message)) { error("cd", message); return; }
     previous_ = cwd_;
     cwd_ = absolute;
     if (previous) output_ << cwd_ << '\n';
+}
+
+void Shell::change_mode(const std::vector<std::string>& arguments) {
+    std::size_t first = 1;
+    bool recursive = false;
+    if (first < arguments.size() && arguments[first] == "-R") { recursive = true; ++first; }
+    if (first < arguments.size() && arguments[first] == "--") ++first;
+    if (first + 1 >= arguments.size()) { error("chmod", "usage: chmod [-R] MODE PATH..."); return; }
+    const auto& mode = arguments[first++];
+    for (; first < arguments.size(); ++first) {
+        std::string message;
+        if (!vfs_.chmod(arguments[first], cwd_, mode, recursive, message)) error("chmod", message);
+    }
+}
+
+void Shell::touch(const std::vector<std::string>& arguments) {
+    bool no_create = false, access = false, modification = false, options = true;
+    std::vector<std::string> paths;
+    for (std::size_t i = 1; i < arguments.size(); ++i) {
+        if (options && arguments[i] == "--") { options = false; continue; }
+        if (options && arguments[i].size() > 1 && arguments[i][0] == '-') {
+            for (std::size_t j = 1; j < arguments[i].size(); ++j) {
+                if (arguments[i][j] == 'c') no_create = true;
+                else if (arguments[i][j] == 'a') access = true;
+                else if (arguments[i][j] == 'm') modification = true;
+                else { error("touch", "unsupported option: " + arguments[i]); return; }
+            }
+        } else paths.push_back(arguments[i]);
+    }
+    if (paths.empty()) { error("touch", "usage: touch [-amc] PATH..."); return; }
+    if (!access && !modification) access = modification = true;
+    for (const auto& path : paths) {
+        std::string message;
+        if (!vfs_.touch(path, cwd_, no_create, access, modification, message)) error("touch", message);
+    }
 }
 
 void Shell::text_command(const std::vector<std::string>& arguments) {
@@ -122,6 +178,18 @@ bool Shell::execute(const std::vector<std::string>& arguments) {
     if (command == "ls") { list(arguments); return true; }
     if (command == "cd") { change_directory(arguments); return true; }
     if (command == "tac" || command == "rev") { text_command(arguments); return true; }
+    if (command == "chmod") { change_mode(arguments); return true; }
+    if (command == "touch") { touch(arguments); return true; }
+    if (command == "vfs-load") {
+        if (arguments.size() != 2) { error(command, "usage: vfs-load <archive.zip>"); return true; }
+        std::string message;
+        if (!vfs_.load_zip(arguments[1], message)) error(command, message);
+        else {
+            cwd_ = previous_ = "/";
+            output_ << "VFS loaded from " << arguments[1] << '\n';
+        }
+        return true;
+    }
     if (command == "echo") {
         for (std::size_t i = 1; i < arguments.size(); ++i) {
             if (i > 1) output_ << ' ';

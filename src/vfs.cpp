@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <ctime>
 #include <fstream>
 #include <limits>
 #include <sstream>
@@ -60,6 +62,68 @@ void append_u32(std::vector<std::uint8_t>& bytes, std::uint32_t value) {
     bytes.push_back(static_cast<std::uint8_t>((value >> 24) & 0xff));
 }
 
+std::vector<std::uint8_t> timestamp_extra(std::int64_t modified, std::int64_t accessed, bool local) {
+    std::vector<std::uint8_t> extra;
+    append_u16(extra, 0x5455); // Standard extended timestamps, Unix seconds.
+    append_u16(extra, local ? 9 : 5);
+    extra.push_back(local ? 3 : 1);
+    append_u32(extra, static_cast<std::uint32_t>(modified));
+    if (local) append_u32(extra, static_cast<std::uint32_t>(accessed));
+    return extra;
+}
+
+std::pair<std::uint16_t, std::uint16_t> dos_timestamp(std::int64_t seconds) {
+    const auto time = static_cast<std::time_t>(seconds);
+    const auto* local = std::localtime(&time);
+    if (!local || local->tm_year < 80 || local->tm_year > 207) return {0, 0x21};
+    return {static_cast<std::uint16_t>((local->tm_hour << 11) | (local->tm_min << 5) | (local->tm_sec / 2)),
+            static_cast<std::uint16_t>(((local->tm_year - 80) << 9) | ((local->tm_mon + 1) << 5) | local->tm_mday)};
+}
+
+std::int64_t unix_timestamp(std::uint16_t time, std::uint16_t date) {
+    if (!date) return 0;
+    std::tm parts{};
+    parts.tm_year = ((date >> 9) & 127) + 80;
+    parts.tm_mon = ((date >> 5) & 15) - 1;
+    parts.tm_mday = date & 31;
+    parts.tm_hour = time >> 11;
+    parts.tm_min = (time >> 5) & 63;
+    parts.tm_sec = (time & 31) * 2;
+    parts.tm_isdst = -1;
+    const auto result = std::mktime(&parts);
+    return result < 0 ? 0 : static_cast<std::int64_t>(result);
+}
+
+bool read_timestamps(const std::vector<std::uint8_t>& bytes, std::size_t offset, std::size_t length,
+                     bool local, std::int64_t& modified, std::int64_t& accessed, std::string& error) {
+    const auto end = offset + length;
+    if (!has_range(bytes, offset, length)) { error = "invalid ZIP extra fields"; return false; }
+    while (offset < end) {
+        std::uint16_t id = 0, size = 0;
+        if (end - offset < 4 || !read_u16(bytes, offset, id) || !read_u16(bytes, offset + 2, size) ||
+            size > end - offset - 4) { error = "truncated ZIP extra field"; return false; }
+        offset += 4;
+        if (id == 0x5455 && size) {
+            const auto flags = bytes[offset];
+            std::size_t position = offset + 1;
+            for (unsigned flag : {1u, 2u, 4u}) {
+                if (!local && flag != 1) break; // Central directory carries only mtime.
+                if (!(flags & flag)) continue;
+                std::uint32_t value = 0;
+                if (position + 4 > offset + size || !read_u32(bytes, position, value)) {
+                    error = "truncated ZIP timestamp";
+                    return false;
+                }
+                if (flag == 1) modified = value;
+                if (flag == 2) accessed = value;
+                position += 4;
+            }
+        }
+        offset += size;
+    }
+    return true;
+}
+
 bool normalize_archive_path(std::string path,
                             std::string& normalized,
                             bool& is_directory,
@@ -67,7 +131,7 @@ bool normalize_archive_path(std::string path,
     std::replace(path.begin(), path.end(), '\\', '/');
     is_directory = !path.empty() && path.back() == '/';
 
-    if (path.empty() || path.front() == '/' ||
+    if (path.empty() || path.find('\0') != std::string::npos || path.front() == '/' ||
         (path.size() >= 2 && path[1] == ':')) {
         error = "archive contains an absolute or empty entry path";
         return false;
@@ -92,7 +156,7 @@ bool normalize_archive_path(std::string path,
         start = end + 1;
     }
 
-    if (normalized.empty()) {
+    if (normalized.empty() && !is_directory) {
         error = "archive contains an invalid root entry";
         return false;
     }
@@ -101,8 +165,7 @@ bool normalize_archive_path(std::string path,
 
 bool add_entry(std::map<std::string, VirtualFileSystem::Entry>& entries,
                const std::string& path,
-               bool is_directory,
-               std::vector<std::uint8_t> data,
+               VirtualFileSystem::Entry value,
                std::string& error) {
     std::size_t separator = path.find('/');
     while (separator != std::string::npos) {
@@ -112,18 +175,21 @@ bool add_entry(std::map<std::string, VirtualFileSystem::Entry>& entries,
             error = "archive entry has a file as a parent: " + parent;
             return false;
         }
-        entries.emplace(parent, VirtualFileSystem::Entry{true, {}});
+        entries.emplace(parent, VirtualFileSystem::Entry{true, {}, 0755});
         separator = path.find('/', separator + 1);
     }
 
     auto existing = entries.find(path);
     if (existing != entries.end()) {
-        if (is_directory && existing->second.is_directory) return true;
+        if (value.is_directory && existing->second.is_directory) {
+            existing->second = std::move(value);
+            return true;
+        }
         error = "archive contains duplicate or conflicting entries: " + path;
         return false;
     }
 
-    entries.emplace(path, VirtualFileSystem::Entry{is_directory, std::move(data)});
+    entries.emplace(path, std::move(value));
     return true;
 }
 
@@ -153,9 +219,10 @@ bool inflate_raw(const std::uint8_t* input,
     }
     const int result = inflate(&stream, Z_FINISH);
     const std::size_t bytes_written = static_cast<std::size_t>(stream.total_out);
+    const std::size_t bytes_read = static_cast<std::size_t>(stream.total_in);
     inflateEnd(&stream);
 
-    if (result != Z_STREAM_END || bytes_written != output_size) {
+    if (result != Z_STREAM_END || bytes_written != output_size || bytes_read != input_size) {
         error = "ZIP entry has invalid compressed data or an unexpected size";
         return false;
     }
@@ -172,17 +239,19 @@ bool build_zip(const std::map<std::string, VirtualFileSystem::Entry>& entries,
         std::uint32_t crc;
         std::uint32_t size;
         std::uint32_t local_offset;
+        std::uint16_t mode;
+        std::int64_t modified;
+        std::int64_t accessed;
     };
 
     std::vector<CentralEntry> central_entries;
     for (const auto& item : entries) {
-        if (item.first.empty()) continue;
-        if (central_entries.size() >= std::numeric_limits<std::uint16_t>::max()) {
-            error = "cannot save more than 65535 ZIP entries";
+        if (central_entries.size() >= std::numeric_limits<std::uint16_t>::max() - 1u) {
+            error = "cannot save more than 65534 ZIP entries";
             return false;
         }
 
-        std::string name = item.first;
+        std::string name = item.first.empty() ? "." : item.first;
         if (item.second.is_directory) name.push_back('/');
         const auto& data = item.second.data;
         if (name.size() > std::numeric_limits<std::uint16_t>::max() ||
@@ -196,20 +265,24 @@ bool build_zip(const std::map<std::string, VirtualFileSystem::Entry>& entries,
                            item.second.is_directory,
                            calculate_crc(data),
                            static_cast<std::uint32_t>(data.size()),
-                           static_cast<std::uint32_t>(bytes.size())};
+                           static_cast<std::uint32_t>(bytes.size()),
+                           item.second.mode, item.second.modified, item.second.accessed};
+        const auto extra = timestamp_extra(entry.modified, entry.accessed, true);
+        const auto stamp = dos_timestamp(entry.modified);
 
         append_u32(bytes, kLocalFileHeaderSignature);
         append_u16(bytes, 20);       // version needed
         append_u16(bytes, 0x0800);   // UTF-8 file names
         append_u16(bytes, 0);        // stored, no compression
-        append_u16(bytes, 0);        // DOS time
-        append_u16(bytes, 0x0021);   // 1980-01-01
+        append_u16(bytes, stamp.first);
+        append_u16(bytes, stamp.second);
         append_u32(bytes, entry.crc);
         append_u32(bytes, entry.size);
         append_u32(bytes, entry.size);
         append_u16(bytes, static_cast<std::uint16_t>(entry.name.size()));
-        append_u16(bytes, 0);        // extra field length
+        append_u16(bytes, static_cast<std::uint16_t>(extra.size()));
         bytes.insert(bytes.end(), entry.name.begin(), entry.name.end());
+        bytes.insert(bytes.end(), extra.begin(), extra.end());
         bytes.insert(bytes.end(), data.begin(), data.end());
         central_entries.push_back(std::move(entry));
     }
@@ -221,24 +294,28 @@ bool build_zip(const std::map<std::string, VirtualFileSystem::Entry>& entries,
     const std::uint32_t central_offset = static_cast<std::uint32_t>(bytes.size());
 
     for (const auto& entry : central_entries) {
+        const auto extra = timestamp_extra(entry.modified, entry.accessed, false);
+        const auto stamp = dos_timestamp(entry.modified);
         append_u32(bytes, kCentralDirectorySignature);
         append_u16(bytes, 0x0314);   // created by Unix, ZIP 2.0
         append_u16(bytes, 20);
         append_u16(bytes, 0x0800);
         append_u16(bytes, 0);
-        append_u16(bytes, 0);
-        append_u16(bytes, 0x0021);
+        append_u16(bytes, stamp.first);
+        append_u16(bytes, stamp.second);
         append_u32(bytes, entry.crc);
         append_u32(bytes, entry.size);
         append_u32(bytes, entry.size);
         append_u16(bytes, static_cast<std::uint16_t>(entry.name.size()));
-        append_u16(bytes, 0);        // extra field length
+        append_u16(bytes, static_cast<std::uint16_t>(extra.size()));
         append_u16(bytes, 0);        // comment length
         append_u16(bytes, 0);        // disk number
         append_u16(bytes, 0);        // internal attributes
-        append_u32(bytes, entry.is_directory ? 0x10u : 0u);
+        const auto unix_mode = static_cast<std::uint32_t>(entry.mode | (entry.is_directory ? 0040000 : 0100000));
+        append_u32(bytes, (unix_mode << 16) | (entry.is_directory ? 0x10u : 0u));
         append_u32(bytes, entry.local_offset);
         bytes.insert(bytes.end(), entry.name.begin(), entry.name.end());
+        bytes.insert(bytes.end(), extra.begin(), extra.end());
     }
 
     if (bytes.size() - central_offset > std::numeric_limits<std::uint32_t>::max()) {
@@ -265,12 +342,31 @@ bool write_archive_atomically(const std::filesystem::path& destination,
         return false;
     }
 
-    std::filesystem::path temporary = destination;
-    temporary += ".tmp";
+    std::filesystem::path staging;
+    bool reserved = false;
+    for (unsigned attempt = 0; attempt < 100; ++attempt) {
+        staging = destination;
+        staging += ".tmp-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) +
+                   "-" + std::to_string(attempt);
+        std::error_code create_error;
+        if (std::filesystem::create_directory(staging, create_error)) { reserved = true; break; }
+        if (create_error && create_error != std::errc::file_exists) {
+            error = "cannot create output file: " + create_error.message();
+            return false;
+        }
+    }
+    if (!reserved) { error = "cannot reserve temporary output directory"; return false; }
+    const auto temporary = staging / "archive.zip";
+    const auto cleanup = [&] {
+        std::error_code ignored;
+        std::filesystem::remove(temporary, ignored);
+        std::filesystem::remove(staging, ignored);
+    };
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output) {
             error = "cannot open temporary output file: " + temporary.string();
+            cleanup();
             return false;
         }
         if (!bytes.empty()) {
@@ -278,11 +374,10 @@ bool write_archive_atomically(const std::filesystem::path& destination,
                          static_cast<std::streamsize>(bytes.size()));
         }
         output.flush();
+        output.close();
         if (!output) {
             error = "failed while writing ZIP archive: " + temporary.string();
-            output.close();
-            std::error_code ignored;
-            std::filesystem::remove(temporary, ignored);
+            cleanup();
             return false;
         }
     }
@@ -291,8 +386,7 @@ bool write_archive_atomically(const std::filesystem::path& destination,
     if (!MoveFileExW(temporary.c_str(), destination.c_str(),
                      MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
         const DWORD code = GetLastError();
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
+        cleanup();
         error = "cannot replace destination ZIP archive (Windows error " +
                 std::to_string(code) + "): " + destination.string();
         return false;
@@ -301,12 +395,12 @@ bool write_archive_atomically(const std::filesystem::path& destination,
     std::error_code rename_error;
     std::filesystem::rename(temporary, destination, rename_error);
     if (rename_error) {
-        std::error_code ignored;
-        std::filesystem::remove(temporary, ignored);
+        cleanup();
         error = "cannot replace destination ZIP archive: " + rename_error.message();
         return false;
     }
 #endif
+    cleanup();
     return true;
 }
 
@@ -401,7 +495,7 @@ bool VirtualFileSystem::load_zip(const std::filesystem::path& archive_path,
     }
 
     std::map<std::string, Entry> loaded_entries;
-    loaded_entries.emplace("", Entry{true, {}});
+    loaded_entries.emplace("", Entry{true, {}, 0755});
     std::size_t cursor = central_offset;
     std::size_t total_uncompressed = 0;
 
@@ -414,10 +508,15 @@ bool VirtualFileSystem::load_zip(const std::filesystem::path& archive_path,
         }
 
         std::uint16_t flags = 0, method = 0;
+        std::uint16_t creator = 0, dos_time = 0, dos_date = 0;
+        std::uint32_t attributes = 0;
         std::uint32_t expected_crc = 0, compressed_size = 0;
         std::uint32_t uncompressed_size = 0, local_offset = 0;
         std::uint16_t name_length = 0, extra_length = 0, comment_length = 0;
-        if (!read_u16(bytes, cursor + 8, flags) ||
+        if (!read_u16(bytes, cursor + 4, creator) ||
+            !read_u16(bytes, cursor + 12, dos_time) || !read_u16(bytes, cursor + 14, dos_date) ||
+            !read_u32(bytes, cursor + 38, attributes) ||
+            !read_u16(bytes, cursor + 8, flags) ||
             !read_u16(bytes, cursor + 10, method) ||
             !read_u32(bytes, cursor + 16, expected_crc) ||
             !read_u32(bytes, cursor + 20, compressed_size) ||
@@ -453,6 +552,16 @@ bool VirtualFileSystem::load_zip(const std::filesystem::path& archive_path,
         std::string path;
         bool is_directory = false;
         if (!normalize_archive_path(raw_name, path, is_directory, error)) return false;
+        const auto unix_mode = static_cast<std::uint16_t>(attributes >> 16);
+        const bool unix_attributes = (creator >> 8) == 3 && unix_mode != 0;
+        const auto type = unix_attributes ? unix_mode & 0170000 : 0;
+        if (type != 0 && type != 0040000 && type != 0100000) {
+            error = "ZIP links and special files are not supported: " + path;
+            return false;
+        }
+        is_directory = is_directory || type == 0040000 || (attributes & 0x10);
+        const auto mode = static_cast<std::uint16_t>(unix_attributes ? unix_mode & 07777 :
+                                                    (is_directory ? 0755 : 0644));
 
         if (uncompressed_size > kMaximumFileSize ||
             total_uncompressed > kMaximumArchiveSize - uncompressed_size) {
@@ -503,7 +612,13 @@ bool VirtualFileSystem::load_zip(const std::filesystem::path& archive_path,
             error = "VFS ZIP directory entry contains file data: " + path;
             return false;
         }
-        if (!add_entry(loaded_entries, path, is_directory, std::move(data), error)) {
+        auto modified = unix_timestamp(dos_time, dos_date);
+        auto accessed = modified;
+        if (!read_timestamps(bytes, static_cast<std::size_t>(local_offset) + 30 + local_name_length,
+                             local_extra_length, true, modified, accessed, error) ||
+            !read_timestamps(bytes, cursor + 46 + name_length, extra_length,
+                             false, modified, accessed, error)) return false;
+        if (!add_entry(loaded_entries, path, Entry{is_directory, std::move(data), mode, modified, accessed}, error)) {
             return false;
         }
         cursor += record_size;
@@ -528,12 +643,13 @@ bool VirtualFileSystem::save_zip(const std::filesystem::path& archive_path,
 bool VirtualFileSystem::initialize(
     const std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& files, std::string& error) {
     std::map<std::string, Entry> loaded;
-    loaded.emplace("", Entry{true, {}});
+    loaded.emplace("", Entry{true, {}, 0755});
     for (const auto& file : files) {
         std::string path;
         bool directory = false;
         if (!normalize_archive_path(file.first, path, directory, error)) return false;
-        if (!add_entry(loaded, path, directory, file.second, error)) return false;
+        Entry value{directory, file.second, static_cast<std::uint16_t>(directory ? 0755 : 0644)};
+        if (!add_entry(loaded, path, std::move(value), error)) return false;
     }
     entries_ = std::move(loaded);
     return true;

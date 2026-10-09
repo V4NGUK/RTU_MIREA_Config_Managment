@@ -1,0 +1,27 @@
+/* Этап 4: относительные пути, каталог, файлы и ошибки. */
+ls
+ls -a
+ls /lines.txt /empty
+ls -- "space name.txt"
+cd /home/alex
+ls . ..
+tac notes.txt
+rev notes.txt /utf8.txt
+cd ..
+cd -
+cd
+cd ~/empty
+cd /
+tac /lines.txt /no-newline.txt /empty.txt
+rev -- /utf8.txt "/space name.txt"
+ls /missing
+ls -z
+cd /missing
+cd /lines.txt
+cd /lines.txt/..
+cd /home /empty
+tac /missing /empty
+rev /missing /empty
+tac -z
+rev -z
+exit

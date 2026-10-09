@@ -22,6 +22,11 @@ public:
     bool initialize(const std::vector<std::pair<std::string, std::vector<std::uint8_t>>>& files,
                     std::string& error);
 
+    bool resolve(const std::string& path, const std::string& cwd, std::string& absolute,
+                 std::string& error, bool allow_missing_leaf = false) const;
+    const Entry* entry(const std::string& absolute) const;
+    bool read_file(const std::string& absolute, std::string& data, std::string& error) const;
+
     bool contains(const std::string& virtual_path) const;
     bool is_directory(const std::string& virtual_path) const;
     std::vector<std::pair<std::string, bool>> list_directory(

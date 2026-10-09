@@ -32,6 +32,15 @@ int main(int argc, char** argv) {
             {"home/alex/documents/semester/configuration/brief.txt", text("A deeply nested file.\n")},
             {"home/alex/projects/shell/src/main.cpp", text("int main() { return 0; }\n")}
         });
+        save_example(output / "commands.zip", {
+            {"lines.txt", text("one\ntwo\nthree\n")},
+            {"no-newline.txt", text("one\ntwo")},
+            {"utf8.txt", text(u8"Привет\nмир\r\n")},
+            {"home/alex/notes.txt", text("first\nsecond\nthird\n")},
+            {"space name.txt", text("with spaces\n")},
+            {".hidden", text("hidden\n")},
+            {"empty.txt", {}}, {"empty/", {}}
+        });
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

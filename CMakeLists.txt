@@ -19,18 +19,38 @@ endif()
 
 find_package(ZLIB REQUIRED)
 
-add_library(vfs_storage src/vfs.cpp)
-target_include_directories(vfs_storage PUBLIC src)
-target_link_libraries(vfs_storage PUBLIC ZLIB::ZLIB)
+add_library(shell_core
+    src/vfs.cpp
+    src/vfs_ops.cpp
+    src/parser.cpp
+    src/shell.cpp
+    src/text_commands.cpp
+)
+target_include_directories(shell_core PUBLIC src)
+target_link_libraries(shell_core PUBLIC ZLIB::ZLIB)
 
 add_executable(emulator src/main.cpp)
-target_link_libraries(emulator PRIVATE vfs_storage)
+target_link_libraries(emulator PRIVATE shell_core)
 
-set(VFS_LIBRARY vfs_storage)
-set(VFS_EXAMPLE_NAMES minimal multiple-files nested)
+set(VFS_LIBRARY shell_core)
+set(VFS_EXAMPLE_NAMES minimal multiple-files nested commands)
 include(cmake/Examples.cmake)
 
 add_executable(test_bin tests/test_repl.cpp)
+target_link_libraries(test_bin PRIVATE shell_core)
 
 enable_testing()
 add_test(NAME ReplTests COMMAND test_bin)
+
+add_executable(command_tests tests/test_commands.cpp)
+target_link_libraries(command_tests PRIVATE shell_core)
+add_dependencies(command_tests example_archives)
+if(MSVC)
+    target_compile_options(command_tests PRIVATE /utf-8)
+endif()
+add_test(NAME CommandTests COMMAND command_tests
+    "${VFS_EXAMPLE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/test-output")
+add_test(NAME CliChecks COMMAND ${CMAKE_COMMAND}
+    "-DEMULATOR=$<TARGET_FILE:emulator>" "-DFIXTURE_DIR=${VFS_EXAMPLE_DIR}"
+    "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli-output" -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_checks.cmake")
+
